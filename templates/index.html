@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PDF Blur Tool</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+    }
+    #dropzone {
+      border: 2px dashed #999;
+      border-radius: 10px;
+      padding: 40px;
+      text-align: center;
+      color: #555;
+      margin-bottom: 30px;
+      cursor: pointer;
+    }
+    .page-container {
+      margin-bottom: 30px;
+      position: relative;
+    }
+    canvas {
+      border: 1px solid #ccc;
+      display: block;
+      cursor: crosshair;
+    }
+    .filename {
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+    .confirm-btn {
+      display: block;
+      margin: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>📄 PDF Blur Tool</h1>
+
+  <div id="dropzone">Drag & drop your PDF here or click to select a file</div>
+
+  <div id="preview"></div>
+  <button id="submit-blurs" style="display:none">✅ Generate Blurred PDF</button>
+
+  <script>
+    const dropzone = document.getElementById('dropzone');
+    const preview = document.getElementById('preview');
+    const submitButton = document.getElementById('submit-blurs');
+    let blurData = [];
+    let fileId = "";
+
+    dropzone.addEventListener('dragover', e => {
+      e.preventDefault();
+      dropzone.style.backgroundColor = '#eef';
+    });
+
+    dropzone.addEventListener('dragleave', () => {
+      dropzone.style.backgroundColor = '';
+    });
+
+    dropzone.addEventListener('drop', async e => {
+      e.preventDefault();
+      dropzone.style.backgroundColor = '';
+
+      const file = e.dataTransfer.files[0];
+      if (!file || !file.name.endsWith('.pdf')) return alert('Please upload a PDF.');
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch('/upload', { method: 'POST', body: formData });
+      const data = await res.json();
+      fileId = data.file_id;
+
+      preview.innerHTML = `<h2>📂 File: ${file.name}</h2>`;
+      blurData = [];
+
+      for (let img of data.images) {
+        const container = document.createElement('div');
+        container.className = 'page-container';
+
+        const filenameEl = document.createElement('div');
+        filenameEl.className = 'filename';
+        filenameEl.textContent = img;
+
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const image = new Image();
+
+        let zoom = 1;
+        let offsetX = 0, offsetY = 0;
+        let dragging = false, dragStartX = 0, dragStartY = 0;
+        let startX, startY, isDrawing = false;
+        const zones = [];
+
+        image.onload = () => {
+          canvas.width = image.width;
+          canvas.height = image.height;
+          ctx.drawImage(image, 0, 0);
+          draw();
+        };
+        image.src = `/images/${img}`;
+
+        function draw() {
+          ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.setTransform(zoom, 0, 0, zoom, -offsetX, -offsetY);
+          ctx.drawImage(image, 0, 0);
+          for (let zone of zones) {
+            ctx.strokeStyle = 'red';
+            ctx.lineWidth = 2 / zoom;
+            ctx.strokeRect(zone.x1, zone.y1, zone.x2 - zone.x1, zone.y2 - zone.y1);
+          }
+        }
+
+        canvas.addEventListener('mousedown', e => {
+          const rect = canvas.getBoundingClientRect();
+          const x = (e.clientX - rect.left + offsetX) / zoom;
+          const y = (e.clientY - rect.top + offsetY) / zoom;
+
+          if (e.button === 2) {
+            dragging = true;
+            dragStartX = e.clientX;
+            dragStartY = e.clientY;
+          } else {
+            startX = x;
+            startY = y;
+            isDrawing = true;
+          }
+        });
+
+        canvas.addEventListener('mousemove', e => {
+          if (dragging) {
+            offsetX -= (e.clientX - dragStartX);
+            offsetY -= (e.clientY - dragStartY);
+            dragStartX = e.clientX;
+            dragStartY = e.clientY;
+            draw();
+          }
+        });
+
+        canvas.addEventListener('mouseup', e => {
+          if (isDrawing) {
+            const rect = canvas.getBoundingClientRect();
+            const endX = (e.clientX - rect.left + offsetX) / zoom;
+            const endY = (e.clientY - rect.top + offsetY) / zoom;
+            isDrawing = false;
+            zones.push({
+              x1: Math.min(startX, endX),
+              y1: Math.min(startY, endY),
+              x2: Math.max(startX, endX),
+              y2: Math.max(startY, endY)
+            });
+            draw();
+          }
+          dragging = false;
+        });
+
+        canvas.addEventListener('wheel', e => {
+          e.preventDefault();
+          const zoomIntensity = 0.1;
+          zoom += e.deltaY > 0 ? -zoomIntensity : zoomIntensity;
+          zoom = Math.max(0.3, Math.min(zoom, 5));
+          draw();
+        });
+
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        container.appendChild(filenameEl);
+        container.appendChild(canvas);
+        preview.appendChild(container);
+
+        blurData.push({ page: img, zones });
+      }
+
+      submitButton.style.display = 'block';
+    });
+
+    dropzone.addEventListener('click', () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'application/pdf';
+      input.onchange = e => {
+        const file = e.target.files[0];
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        dropzone.dispatchEvent(new DragEvent('drop', { dataTransfer: dt }));
+      };
+      input.click();
+    });
+
+    submitButton.addEventListener('click', async () => {
+      const payload = blurData.map(item => ({
+        page: item.page,
+        zones: item.zones
+      }));
+
+      const res = await fetch('/blur', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: fileId, blur_data: payload })
+      });
+
+      if (res.ok) {
+        const blob = await res.blob();
+        const link = document.createElement('a');
+        link.href = window.URL.createObjectURL(blob);
+        link.download = 'blurred_output.pdf';
+        link.click();
+      } else {
+        alert('Failed to generate blurred PDF.');
+      }
+    });
+  </script>
+</body>
+</html>
