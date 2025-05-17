@@ -3,3 +3,4 @@ pdf2image
 pillow
 opencv-python
 img2pdf
+gunicorn
